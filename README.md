@@ -25,6 +25,8 @@ Key features:
 2. Open Terminal and navigate to the folder containing the files
 3. Run the installer:
    ```
+   python -m venv venv
+   source venv/bin/activate
    python install.py
    ```
 4. The installer will:
