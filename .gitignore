@@ -1,3 +1,6 @@
+__pycache__/
+*.pyc
+.DS_Store
 venv
 samples
 md_to_docx_app
