@@ -894,6 +894,8 @@ def process_list_block_with_styles(doc, lines, start_line, end_line, styles_info
     current_list_item = None
     in_code_block = False
     code_block_lines = []
+    code_blocks = []  # Store code blocks to add later
+
     
     i = start_line
     while i <= end_line:
@@ -908,7 +910,8 @@ def process_list_block_with_styles(doc, lines, start_line, end_line, styles_info
             else:
                 in_code_block = False
                 code_text = '\n'.join(code_block_lines)
-                add_code_block(doc, code_text, language)
+                # Store code block to add later instead of adding it immediately
+                code_blocks.append((i, code_text, language))
                 code_block_lines = []
             
             i += 1
@@ -953,8 +956,13 @@ def process_list_block_with_styles(doc, lines, start_line, end_line, styles_info
     # Process items with correct nesting
     if items:
         create_nested_list_items_with_styles(doc, items, styles_info)
+        
+        # Now add the code blocks in the correct order
+        for position, code_text, lang in sorted(code_blocks):
+            add_code_block(doc, code_text, lang)
+        
         return True
-    
+
     return False
 
 def create_docx_from_readme_with_styles(readme_path, template_path, output_path):
