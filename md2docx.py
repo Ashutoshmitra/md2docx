@@ -132,7 +132,7 @@ def extract_table_styles(doc):
     table_styles = {}
     
     # Process all tables in the template
-    for table in doc.tables:
+    for table_index, table in enumerate(doc.tables):
         style_name = table.style.name if hasattr(table, 'style') and hasattr(table.style, 'name') else 'Default Table Style'
         
         # Initialize style dictionary for this table style
@@ -141,7 +141,8 @@ def extract_table_styles(doc):
             "has_header": False,
             "header_style": "Table Heading",
             "header_formatting": {},
-            "cell_styles": {}
+            "cell_styles": {},
+            "table_index": table_index,  # Store the table index for reference
         }
         
         # Check for header row
@@ -166,6 +167,32 @@ def extract_table_styles(doc):
                 table_styles[style_name]["header_formatting"] = {
                     "bold": True
                 }
+                
+            # Capture cell text style (for first cell in second row)
+            if len(body_cells) > 0 and len(body_cells[0].paragraphs) > 0:
+                first_body_cell = body_cells[0]
+                cell_para = first_body_cell.paragraphs[0]
+                
+                if hasattr(cell_para, 'style') and hasattr(cell_para.style, 'name'):
+                    table_styles[style_name]["cell_style"] = cell_para.style.name
+                    
+                # Capture run properties if any
+                if len(cell_para.runs) > 0:
+                    run = cell_para.runs[0]
+                    table_styles[style_name]["cell_font"] = {
+                        "name": run.font.name if hasattr(run.font, 'name') else None,
+                        "size": run.font.size.pt if hasattr(run.font, 'size') and run.font.size else None,
+                        "bold": run.font.bold if hasattr(run.font, 'bold') else None,
+                        "italic": run.font.italic if hasattr(run.font, 'italic') else None,
+                    }
+    
+    # If we found any tables, store additional information about the first table (usually logo table)
+    if doc.tables and len(doc.tables) > 0:
+        first_table = doc.tables[0]
+        table_styles["first_table"] = {
+            "row_count": len(first_table.rows),
+            "col_count": len(first_table.rows[0].cells) if len(first_table.rows) > 0 else 0,
+        }
     
     return table_styles
 
@@ -274,7 +301,7 @@ def add_code_block(doc, code_text, language=None):
 
 def add_table_with_styles(doc, table_soup, styles_info):
     """
-    Add a table to the document using template styles with enhanced style preservation.
+    Add a table to the document using template styles with proper style inheritance.
     
     Args:
         doc: The docx Document object
@@ -301,24 +328,60 @@ def add_table_with_styles(doc, table_soup, styles_info):
     # Create the table in the document
     table = doc.add_table(rows=len(rows), cols=max_cols)
     
-    # Default table style fallback
-    default_table_style = styles_info.get('default_table_style', 'Table Grid')
+    # Get detailed table style information from template
+    table_style_details = styles_info.get('table_style_details', {})
+    
+    # Find the most appropriate table style from the template - prefer the second table if available
+    # (assuming first table is usually the logo table)
+    preferred_table_style = None
+    
+    # If there are at least two tables in the template, use the second one's style
+    for style_name, details in table_style_details.items():
+        if details.get("table_index", 0) == 1:  # Second table (index 1)
+            preferred_table_style = style_name
+            break
+    
+    # If no second table, fall back to any other table style
+    if not preferred_table_style:
+        for style_name, details in table_style_details.items():
+            if style_name != "first_table":
+                preferred_table_style = style_name
+                break
+    
+    # Apply table style - use Table Grid as a fallback
+    default_table_style = preferred_table_style or 'Table Grid'
     try:
         table.style = default_table_style
+        print(f"Applied table style: {default_table_style}")
     except Exception as e:
-        print(f"Could not apply table style {default_table_style}: {e}")
-        table.style = 'Table Grid'
+        print(f"Could not apply table style {default_table_style}, falling back to Table Grid: {e}")
+        try:
+            table.style = 'Table Grid'
+        except:
+            pass
     
-    # Detailed table style information from template
-    table_style_details = styles_info.get('table_style_details', {})
-    default_table_details = table_style_details.get(default_table_style, {})
+    # Get cell styles from template
+    cell_style_name = "= Table text"  # Default style name for regular cells
+    header_style_name = "Table Heading"  # Default style name for header cells
     
-    # Determine header row detection
-    has_header = (
-        default_table_details.get("has_header", False) or 
-        any(row.find_all('th') for row in rows)
-    )
-    header_style = default_table_details.get("header_style", "Table Heading")
+    # Check if these styles exist in the document
+    if cell_style_name not in [s.name for s in doc.styles]:
+        available_table_styles = [s.name for s in doc.styles if '= Table' in s.name or 'Table' in s.name]
+        if available_table_styles:
+            cell_style_name = available_table_styles[0]
+        else:
+            cell_style_name = "Normal"
+            
+    # Check if Table Heading style exists
+    if header_style_name not in [s.name for s in doc.styles]:
+        available_header_styles = [s.name for s in doc.styles if 'Table Head' in s.name]
+        if available_header_styles:
+            header_style_name = available_header_styles[0]
+        else:
+            header_style_name = "Normal"
+    
+    # Determine if table has a header
+    has_header = any(row.find_all('th') for row in rows) or True  # Assume first row is header if no th found
     
     # Process each row and cell
     for i, row in enumerate(rows):
@@ -331,48 +394,52 @@ def add_table_with_styles(doc, table_soup, styles_info):
             # Get cell text
             cell_text = cell.get_text().strip()
             table_cell = table.rows[i].cells[j]
-            paragraph = table_cell.paragraphs[0]
             
-            # Style for header rows
+            # Clear any existing paragraphs in the cell
+            for p in table_cell.paragraphs[:]:
+                p._element.getparent().remove(p._element)
+            
+            # Add a new paragraph to the cell
+            paragraph = table_cell.add_paragraph()
+            
+            # Apply appropriate style based on whether this is a header cell
             if (cell.name == 'th') or (i == 0 and has_header):
                 try:
-                    # Apply header style
-                    paragraph.style = header_style
-                    run = paragraph.add_run(cell_text)
-                    run.bold = True
-                except Exception as e:
-                    print(f"Error applying header style: {e}")
-                    paragraph.add_run(cell_text)
-            else:
-                # Body cell styling
-                try:
-                    # Alternate row styling if available
-                    if i % 2 == 1 and "alternate_row_style" in default_table_details:
-                        paragraph.style = default_table_details["alternate_row_style"]
-                    
-                    # Last column special styling
-                    if j == max_cols - 1 and "last_column_style" in default_table_details:
-                        paragraph.style = default_table_details["last_column_style"]
-                    
-                    # Default body cell style
-                    paragraph.style = "= Table text" if "= Table text" in styles_info.get('paragraph_styles', {}) else "Normal"
-                    paragraph.add_run(cell_text)
+                    paragraph.style = header_style_name
+                except:
+                    # If style application fails, just continue with default
+                    pass
                 
-                except Exception as e:
-                    print(f"Error styling body cell: {e}")
-                    paragraph.add_run(cell_text)
+                # Add content - keeping bold for headers regardless of style
+                run = paragraph.add_run(cell_text)
+                run.bold = True
+            else:
+                # Apply the table text style for regular cells
+                try:
+                    paragraph.style = cell_style_name
+                except:
+                    # If style application fails, just continue with default
+                    pass
+                
+                # Simply add the text without any direct formatting
+                run = paragraph.add_run(cell_text)
     
-    # Special handling for total/summary row
-    if len(rows) > 1 and "= Table total" in styles_info.get('paragraph_styles', {}):
+    # If the table has a special format for the bottom row (totals)
+    if len(rows) > 1:
         last_row = rows[-1]
         if (last_row.find('th') or 
             "sum" in last_row.get_text().lower() or 
             "total" in last_row.get_text().lower()):
-            for cell in table.rows[-1].cells:
-                try:
-                    cell.paragraphs[0].style = "= Table total"
-                except:
-                    pass
+            
+            # Try to apply the table total style if it exists
+            total_style_name = "= Table total"
+            if total_style_name in [s.name for s in doc.styles]:
+                for cell in table.rows[-1].cells:
+                    for paragraph in cell.paragraphs:
+                        try:
+                            paragraph.style = total_style_name
+                        except:
+                            pass
 
 def identify_list_blocks(lines):
     """
@@ -751,7 +818,7 @@ def create_nested_list_items_with_styles(doc, items, styles_info):
         styles_info: Dictionary containing style information from the template
     """
     # Use bullet characters from template, or fallback to defaults
-    bullet_chars = styles_info.get('default_bullets', ['•', '◦', '▪', '▫'])
+    # bullet_chars = styles_info.get('default_bullets', ['•', '◦', '▪', '▫'])
     
     # Get style names for bullet and numbered lists
     # For numbered lists, specifically look for styles containing "Text numbering"
